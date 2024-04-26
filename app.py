@@ -1,7 +1,9 @@
 from flask import Flask, request, jsonify
 import requests
+import flask_cors
 
 app = Flask(__name__)
+cors(app)
 
 # Third-party API endpoint URLs
 ID_ENDPOINT = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed"
