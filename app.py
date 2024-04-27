@@ -1,90 +1,88 @@
 from flask import Flask, request, jsonify
-import requests
 from flask_cors import CORS
+import requests
+import xmltodict
 
 app = Flask(__name__)
 CORS(app)
 
-# Third-party API endpoint URLs
-ID_ENDPOINT = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed"
-DETAILS_ENDPOINT = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed"
-
 @app.route('/search', methods=['POST'])
 def search_publications():
-    """
-    Search publications based on a given query.
-
-    Request Body:
-    {
-        "query": "Your search query",
-        "retstart": Optional. Pagination start index. Default is 0.
-        "retmax": Optional. Maximum number of results per page. Default is 10.
+    # PubMed API for searching publications
+    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+    data = request.json
+    print(data)
+    query = data.get('query')
+    pagination = data.get('pagination', {'start': 0, 'limit': 10})
+    
+    params = {
+        'db': 'pubmed',
+        'term': query,
+        'retstart': pagination['start'],
+        'retmax': pagination['limit'],
+        'retmode': 'json'
     }
-
-    Returns:
-    {
-        "ids": ["id1", "id2", ...]
-    }
-    """
-    try:
-        query = request.json.get('query')
-        retstart = request.json.get('retstart', 0)
-        retmax = request.json.get('retmax', 10)
-
-        params = {
-            'term': query,
-            'retstart': retstart,
-            'retmax': retmax,
-            'retmode': 'json'
-        }
-
-        response = requests.get(ID_ENDPOINT, params=params)
-        data = response.json()
-        ids = data['esearchresult']['idlist']
-
-        return jsonify({'ids': ids}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    response = requests.get(base_url, params=params)
+    a = response.json()
+    print(a['esearchresult']['idlist'])
+    return jsonify(a['esearchresult']['idlist'])
 
 @app.route('/details', methods=['GET'])
-def get_publication_details():
-    """
-    Get details of publications based on provided IDs.
-
-    Request Args:
-    ids: Comma-separated list of publication IDs.
-    fields: Optional. Comma-separated list of fields to return.
-
-    Returns:
-    {
-        "publications": [
-            {"PMID": "", "Title": "", "Abstract": "", "AuthorList": "", "Journal": "", "PublicationYear": "", "MeSHTerms": []},
-            ...
-        ]
+def get_details():
+    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    ids = request.args.getlist('ids')
+    print(','.join(ids))
+    params = {
+        'db': 'pubmed',
+        'id': ids,  # Ensure IDs are passed as a comma-separated string
+        'retmode': 'xml',
+        'rettype': 'abstract'
     }
-    """
+    
     try:
-        ids = request.args.get('ids').split(',')
-        fields = request.args.get('fields', '').split(',')
-
-        params = {
-            'id': ','.join(ids),
-            'retmode': 'xml'
-        }
-
-        response = requests.get(DETAILS_ENDPOINT, params=params)
-        # Process XML response and extract required fields
-        # Your implementation to parse XML and extract required fields
-
-        # Example response
-        publications = [
-            {'PMID': '123456', 'Title': 'Sample Title', 'Abstract': 'Sample Abstract', 'AuthorList': 'Sample Authors', 'Journal': 'Sample Journal', 'PublicationYear': '2023', 'MeSHTerms': ['Term1', 'Term2']},
-            {'PMID': '789012', 'Title': 'Another Title', 'Abstract': 'Another Abstract', 'AuthorList': 'Another Authors', 'Journal': 'Another Journal', 'PublicationYear': '2022', 'MeSHTerms': ['Term3', 'Term4']}
-        ]
-
-        return jsonify({'publications': publications}), 200
+        response = requests.get(base_url, params=params)
+        data = xmltodict.parse(response.content)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 500  # Return a 500 internal server error on failure
+
+    articles = data.get("PubmedArticleSet", {}).get("PubmedArticle", [])
+    if not isinstance(articles, list):
+        articles = [articles]  # Ensure articles is always a list
+    
+    extracted_info = []
+
+    for article in articles:
+        medline_citation = article.get("MedlineCitation", {})
+        article_data = medline_citation.get("Article", {})
+
+        pmid = medline_citation.get("PMID", {}).get("#text", "Data not available")
+        title = article_data.get("ArticleTitle", "Data not available")
+        abstract = article_data.get("Abstract", {}).get("AbstractText", "Data not available")
+        abstract_text = " ".join([ab.get("#text", "") for ab in abstract]) if isinstance(abstract, list) else abstract
+
+        authors = article_data.get("AuthorList", {}).get("Author", [])
+        author_list = [f"{author.get('ForeName', '')} {author.get('LastName', '')}" for author in authors if author.get('ForeName')]
+        author_list_text = ", ".join(author_list)
+
+        journal = article_data.get("Journal", {}).get("Title", "Data not available")
+        pub_year = article_data.get("Journal", {}).get("JournalIssue", {}).get("PubDate", {}).get("Year", "Data not available")
+
+        mesh_terms = medline_citation.get("MeshHeadingList", {}).get("MeshHeading", [])
+        mesh_term_list = [mesh.get("DescriptorName", {}).get("#text", "") for mesh in mesh_terms]
+        mesh_terms_text = ", ".join(mesh_term_list)
+
+        extracted_info.append({
+            "PMID": pmid,
+            "Title": title,
+            "Abstract": abstract_text,
+            "Author List": author_list_text,
+            "Journal": journal,
+            "Publication Year": pub_year,
+            "MeSH Terms": mesh_terms_text
+        })
+
+    print(extracted_info)
+    return jsonify(extracted_info)  # Use jsonify to wrap the response
 
 if __name__ == '__main__':
     app.run(debug=True)
